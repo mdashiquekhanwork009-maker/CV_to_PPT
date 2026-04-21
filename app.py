@@ -205,6 +205,22 @@ def choose_location(lines):
     return ""
 
 
+def choose_job_title(lines, name, location):
+    ignored_lines = {name.strip().lower(), location.strip().lower()}
+
+    for line in lines[:20]:
+        lower_line = line.lower().strip()
+        if not lower_line or lower_line in ignored_lines:
+            continue
+        if is_contact_line(line) or is_probable_heading(line) or is_date_heavy(line):
+            continue
+        if len(line) < 6 or len(line) > 60:
+            continue
+        return line
+
+    return "Automation Testing or Functional Testing"
+
+
 def split_sections(lines):
     sections = {key: [] for key in SECTION_ALIASES}
     current_section = None
@@ -347,10 +363,13 @@ def build_education_text(sections):
 def parse_cv(text):
     lines = collect_lines(text)
     sections = split_sections(lines)
+    name = choose_name(lines)
+    location = choose_location(lines)
 
     return {
-        "name": choose_name(lines),
-        "location": choose_location(lines),
+        "name": name,
+        "location": location,
+        "job_title": choose_job_title(lines, name, location),
         "profile": build_profile_text(sections, lines),
         "experience": build_experience_text(sections, lines),
         "skills": build_skills_text(sections, lines),
@@ -372,6 +391,21 @@ def find_shape_with_text(slide, marker):
         if marker in shape_text(shape).lower():
             return shape
     return None
+
+
+def find_top_banner_shape(slide):
+    candidates = []
+    for shape in text_shapes(slide):
+        if shape.top > 1200000:
+            continue
+        if shape.width < 6000000:
+            continue
+        candidates.append(shape)
+
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda shape: (shape.top, shape.left))
 
 
 def horizontal_overlap(shape_a, shape_b):
@@ -407,6 +441,32 @@ def find_body_shape_below_heading(slide, heading_text):
         return None
 
     return min(candidates, key=lambda shape: shape.top - heading_shape.top)
+
+
+def find_name_shape(slide):
+    named_shape = find_shape_with_text(slide, "FirstName SecondName")
+    if named_shape:
+        return named_shape
+
+    profile_heading = find_shape_with_text(slide, "PROFILE")
+    title_shape = find_top_banner_shape(slide)
+
+    candidates = []
+    for shape in text_shapes(slide):
+        if shape == profile_heading or shape == title_shape:
+            continue
+        if title_shape and shape.top <= title_shape.top:
+            continue
+        if profile_heading and shape.top >= profile_heading.top:
+            continue
+        if shape.left > 4000000:
+            continue
+        candidates.append(shape)
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda shape: shape.width * shape.height)
 
 
 def set_paragraph_font(paragraph, size, bold=False):
@@ -457,15 +517,36 @@ def set_name_block(shape, name, location):
         set_paragraph_font(location_paragraph, 11)
 
 
-def clear_template_content(slide):
-    editable_shapes = [
-        find_shape_with_text(slide, "FirstName SecondName"),
-        find_body_shape_below_heading(slide, "PROFILE"),
-        find_body_shape_below_heading(slide, "RELEVANT EXPERIENCE"),
-        find_body_shape_below_heading(slide, "FUNCTIONAL & TECHNICAL EXPERIENCE"),
-    ]
+def set_single_line_text(shape, content, font_size, bold=False):
+    if not shape:
+        return
 
-    for shape in editable_shapes:
+    frame = shape.text_frame
+    frame.clear()
+    frame.word_wrap = True
+
+    text = (content or "").strip()
+    if not text:
+        return
+
+    paragraph = frame.paragraphs[0]
+    paragraph.text = text
+    set_paragraph_font(paragraph, font_size, bold=bold)
+
+
+def locate_template_shapes(slide):
+    return {
+        "job_title": find_shape_with_text(slide, "Automation Testing or Functional Testing")
+        or find_top_banner_shape(slide),
+        "name": find_name_shape(slide),
+        "profile": find_body_shape_below_heading(slide, "PROFILE"),
+        "experience": find_body_shape_below_heading(slide, "RELEVANT EXPERIENCE"),
+        "skills": find_body_shape_below_heading(slide, "FUNCTIONAL & TECHNICAL EXPERIENCE"),
+    }
+
+
+def clear_template_content(shape_map):
+    for shape in shape_map.values():
         if shape and getattr(shape, "has_text_frame", False):
             shape.text_frame.clear()
             shape.text_frame.word_wrap = True
@@ -475,19 +556,13 @@ def create_ppt(data, template_path):
     prs = Presentation(template_path)
 
     for slide in prs.slides:
-        clear_template_content(slide)
-        set_name_block(find_shape_with_text(slide, "FirstName SecondName"), data["name"], data["location"])
-        set_text_block(find_body_shape_below_heading(slide, "PROFILE"), data["profile"], 11)
-        set_text_block(
-            find_body_shape_below_heading(slide, "RELEVANT EXPERIENCE"),
-            data["experience"],
-            10,
-        )
-        set_text_block(
-            find_body_shape_below_heading(slide, "FUNCTIONAL & TECHNICAL EXPERIENCE"),
-            data["skills"],
-            10,
-        )
+        shape_map = locate_template_shapes(slide)
+        clear_template_content(shape_map)
+        set_single_line_text(shape_map["job_title"], data["job_title"], 20)
+        set_name_block(shape_map["name"], data["name"], data["location"])
+        set_text_block(shape_map["profile"], data["profile"], 11)
+        set_text_block(shape_map["experience"], data["experience"], 10)
+        set_text_block(shape_map["skills"], data["skills"], 10)
 
     output_path = os.path.join(tempfile.gettempdir(), "generated.pptx")
     prs.save(output_path)
@@ -517,7 +592,7 @@ def render_preview(data):
                 <div style="font-size:12px; color:#4b5563;">Template Preview</div>
                 <div style="font-size:26px; font-weight:800; color:#111827; letter-spacing:-1px;">Deloitte<span style="color:#84b819;">.</span></div>
             </div>
-            <div style="font-size:14px; color:#4b5563; margin-bottom:12px;">Automation Testing or Functional Testing</div>
+            <div style="font-size:14px; color:#4b5563; margin-bottom:12px;">{escape(data["job_title"] or "Automation Testing or Functional Testing")}</div>
             <div style="display:grid; grid-template-columns:42% 58%; gap:10px; height:calc(100% - 78px);">
                 <div style="display:grid; grid-template-rows:auto 1fr; gap:10px;">
                     <div style="border-top:3px solid #2d90c7; padding-top:10px;">
@@ -586,13 +661,14 @@ if uploaded_file:
         text = extract_text(uploaded_file)
         parsed_data = parse_cv(text)
         st.session_state["loaded_file_signature"] = file_signature
-        for field in ["name", "location", "profile", "experience", "skills", "education"]:
+        for field in ["name", "location", "job_title", "profile", "experience", "skills", "education"]:
             st.session_state[f"cv_{field}"] = parsed_data.get(field, "")
 
     editor_column, preview_column = st.columns([1, 2], gap="large")
 
     with editor_column:
         st.subheader("Edit Content")
+        st.text_input("Job Title", key="cv_job_title")
         st.text_input("Name", key="cv_name")
         st.text_input("Location", key="cv_location")
         st.text_area("Profile", key="cv_profile", height=190)
@@ -600,6 +676,7 @@ if uploaded_file:
         st.text_area("Functional / Technical Experience", key="cv_skills", height=190)
 
     edited_data = {
+        "job_title": st.session_state.get("cv_job_title", "").strip(),
         "name": st.session_state.get("cv_name", "").strip(),
         "location": st.session_state.get("cv_location", "").strip(),
         "profile": st.session_state.get("cv_profile", "").strip(),
