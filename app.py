@@ -9,6 +9,8 @@ from docx import Document
 from pptx import Presentation
 from pptx.util import Pt
 
+st.set_page_config(page_title="CV to PPT Generator", layout="wide")
+
 
 SECTION_ALIASES = {
     "profile": {
@@ -372,10 +374,18 @@ def find_shape_with_text(slide, marker):
     return None
 
 
-def overlaps_horizontally(shape_a, shape_b):
+def horizontal_overlap(shape_a, shape_b):
     left = max(shape_a.left, shape_b.left)
     right = min(shape_a.left + shape_a.width, shape_b.left + shape_b.width)
-    return right > left
+    return max(0, right - left)
+
+
+def has_meaningful_horizontal_overlap(shape_a, shape_b, threshold=0.6):
+    overlap = horizontal_overlap(shape_a, shape_b)
+    baseline = min(shape_a.width, shape_b.width)
+    if baseline <= 0:
+        return False
+    return (overlap / baseline) >= threshold
 
 
 def find_body_shape_below_heading(slide, heading_text):
@@ -389,7 +399,7 @@ def find_body_shape_below_heading(slide, heading_text):
             continue
         if shape.top <= heading_shape.top:
             continue
-        if not overlaps_horizontally(shape, heading_shape):
+        if not has_meaningful_horizontal_overlap(shape, heading_shape):
             continue
         candidates.append(shape)
 
@@ -406,7 +416,7 @@ def set_paragraph_font(paragraph, size, bold=False):
 
 
 def set_text_block(shape, content, font_size):
-    if not shape or not content.strip():
+    if not shape:
         return
 
     frame = shape.text_frame
@@ -447,10 +457,25 @@ def set_name_block(shape, name, location):
         set_paragraph_font(location_paragraph, 11)
 
 
+def clear_template_content(slide):
+    editable_shapes = [
+        find_shape_with_text(slide, "FirstName SecondName"),
+        find_body_shape_below_heading(slide, "PROFILE"),
+        find_body_shape_below_heading(slide, "RELEVANT EXPERIENCE"),
+        find_body_shape_below_heading(slide, "FUNCTIONAL & TECHNICAL EXPERIENCE"),
+    ]
+
+    for shape in editable_shapes:
+        if shape and getattr(shape, "has_text_frame", False):
+            shape.text_frame.clear()
+            shape.text_frame.word_wrap = True
+
+
 def create_ppt(data, template_path):
     prs = Presentation(template_path)
 
     for slide in prs.slides:
+        clear_template_content(slide)
         set_name_block(find_shape_with_text(slide, "FirstName SecondName"), data["name"], data["location"])
         set_text_block(find_body_shape_below_heading(slide, "PROFILE"), data["profile"], 11)
         set_text_block(
@@ -486,28 +511,38 @@ def format_preview_lines(text):
 
 def render_preview(data):
     preview_html = f"""
-    <div style="background:linear-gradient(135deg, #eef4f8, #dde7ef); padding:24px; border-radius:18px;">
-        <div style="background:#ffffff; width:100%; max-width:950px; min-height:540px; margin:0 auto; padding:24px 28px; box-shadow:0 16px 40px rgba(15, 23, 42, 0.12); border:1px solid #dbe4ea;">
-            <div style="font-size:14px; color:#4b5563; margin-bottom:16px;">Template Preview</div>
-            <div style="display:grid; grid-template-columns:42% 58%; gap:18px;">
-                <div>
-                    <div style="border-bottom:3px solid #2d90c7; padding-bottom:12px; margin-bottom:16px;">
-                        <div style="font-size:28px; font-weight:700; color:#111827;">{escape(data["name"] or "Candidate Name")}</div>
-                        <div style="font-size:14px; color:#6b7280; margin-top:6px;">{escape(data["location"] or "Location")}</div>
+    <div style="background:linear-gradient(135deg, #eef4f8, #dde7ef); padding:18px; border-radius:18px;">
+        <div style="background:#ffffff; width:100%; aspect-ratio:16 / 9; margin:0 auto; padding:18px 20px; box-shadow:0 16px 40px rgba(15, 23, 42, 0.12); border:1px solid #dbe4ea; overflow:hidden;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+                <div style="font-size:12px; color:#4b5563;">Template Preview</div>
+                <div style="font-size:26px; font-weight:800; color:#111827; letter-spacing:-1px;">Deloitte<span style="color:#84b819;">.</span></div>
+            </div>
+            <div style="font-size:14px; color:#4b5563; margin-bottom:12px;">Automation Testing or Functional Testing</div>
+            <div style="display:grid; grid-template-columns:42% 58%; gap:10px; height:calc(100% - 78px);">
+                <div style="display:grid; grid-template-rows:auto 1fr; gap:10px;">
+                    <div style="border-top:3px solid #2d90c7; padding-top:10px;">
+                        <div style="font-size:18px; font-weight:700; color:#111827; line-height:1.2;">{escape(data["name"] or "Candidate Name")}</div>
+                        <div style="font-size:11px; color:#6b7280; margin-top:4px;">{escape(data["location"] or "Location")}</div>
                     </div>
-                    <div style="background:#f97316; color:#111827; font-weight:700; padding:6px 10px; font-size:14px;">PROFILE</div>
-                    <div style="border:1px solid #cfd8df; padding:12px; min-height:260px; font-size:14px;">
-                        {format_preview_lines(data["profile"])}
+                    <div>
+                        <div style="background:#f97316; color:#ffffff; font-weight:700; padding:5px 8px; font-size:11px;">PROFILE</div>
+                        <div style="border:1px solid #cfd8df; padding:10px; height:100%; font-size:11px; overflow:hidden;">
+                            {format_preview_lines(data["profile"])}
+                        </div>
                     </div>
                 </div>
-                <div>
-                    <div style="background:#f97316; color:#111827; font-weight:700; padding:6px 10px; font-size:14px;">RELEVANT EXPERIENCE</div>
-                    <div style="border:1px solid #cfd8df; padding:12px; min-height:215px; font-size:13px; margin-bottom:16px;">
-                        {format_preview_lines(data["experience"])}
+                <div style="display:grid; grid-template-rows:58% 42%; gap:10px;">
+                    <div>
+                        <div style="background:#f97316; color:#ffffff; font-weight:700; padding:5px 8px; font-size:11px;">RELEVANT EXPERIENCE</div>
+                        <div style="border:1px solid #cfd8df; padding:10px; height:100%; font-size:10px; overflow:hidden;">
+                            {format_preview_lines(data["experience"])}
+                        </div>
                     </div>
-                    <div style="background:#f97316; color:#111827; font-weight:700; padding:6px 10px; font-size:14px;">FUNCTIONAL &amp; TECHNICAL EXPERIENCE</div>
-                    <div style="border:1px solid #cfd8df; padding:12px; min-height:160px; font-size:13px;">
-                        {format_preview_lines(data["skills"])}
+                    <div>
+                        <div style="background:#f97316; color:#ffffff; font-weight:700; padding:5px 8px; font-size:11px;">FUNCTIONAL &amp; TECHNICAL EXPERIENCE</div>
+                        <div style="border:1px solid #cfd8df; padding:10px; height:100%; font-size:10px; overflow:hidden;">
+                            {format_preview_lines(data["skills"])}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -516,6 +551,28 @@ def render_preview(data):
     """
     st.markdown(preview_html, unsafe_allow_html=True)
 
+
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        max-width: 96rem;
+        padding-top: 2rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+
+    div[data-testid="column"]:first-child {
+        min-width: 0;
+    }
+
+    div[data-testid="column"]:last-child {
+        min-width: 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.title("CV to PPT Generator")
 
@@ -532,7 +589,7 @@ if uploaded_file:
         for field in ["name", "location", "profile", "experience", "skills", "education"]:
             st.session_state[f"cv_{field}"] = parsed_data.get(field, "")
 
-    editor_column, preview_column = st.columns([1, 1], gap="large")
+    editor_column, preview_column = st.columns([1, 2], gap="large")
 
     with editor_column:
         st.subheader("Edit Content")
